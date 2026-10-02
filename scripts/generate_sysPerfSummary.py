@@ -97,6 +97,11 @@ METRICS = [
         "unit": "MB/s",
         "query": 'avg by (instance) (rate(node_network_transmit_bytes_total{{device=~"ens.*"}}[{range}])) / 1048576',
     },
+    {
+        "name": "Data points",
+        "unit": "Count",
+        "query": 'count_over_time(node_cpu_seconds_total{{mode="idle"}}[{range}])',
+    }
 ]
 
 ''' Future Metrics
