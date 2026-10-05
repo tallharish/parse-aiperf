@@ -14,7 +14,9 @@ If no path is given, it defaults to "aiperf.log" in the current directory.
 """
 
 import re
+import os
 import sys
+import csv
 import math
 import json
 import argparse
@@ -241,18 +243,25 @@ def format_table(headers, rows):
     return "\n".join(lines)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "log_path", nargs="?", default="aiperf.log",
-        help="Path to aiperf.log (default: ./aiperf.log)",
-    )
-    args = parser.parse_args()
+def write_csv(path, headers, rows):
+    """Write the metric/client_system/server_system table out as CSV."""
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        writer.writerows(rows)
 
-    start_dt, end_dt = find_run_window(args.log_path)
+
+def process_run(log_path, output_csv=None):
+    """
+    Run the full pipeline for one aiperf.log: find the run window, query
+    Prometheus for every metric, print the comparison table, and write it
+    to CSV. Returns the CSV path written.
+    """
+    start_dt, end_dt = find_run_window(log_path)
     range_str, raw_seconds = duration_to_promql_range(start_dt, end_dt)
     end_time_str = format_prom_time(end_dt)
 
+    print(f"Log file         : {log_path}")
     print(f"Run start        : {start_dt.isoformat()}")
     print(f"Run end          : {end_dt.isoformat()}")
     print(f"Duration         : {raw_seconds:.1f}s -> rounded to {range_str} for the query range")
@@ -282,7 +291,81 @@ def main():
         server_str = f"{server_val:.2f}" if server_val is not None else "N/A"
         rows.append([f"{metric['name']} ({metric['unit']})", client_str, server_str])
 
-    print(format_table(["Metric", "client_system", "server_system"], rows))
+    headers = ["Metric", "client_system", "server_system"]
+    print(format_table(headers, rows))
+
+    if output_csv:
+        csv_path = output_csv
+    else:
+        log_dir = os.path.dirname(os.path.abspath(log_path))
+        csv_name = f"aiperf_system_metrics_{end_dt.strftime('%Y%m%d_%H%M%S')}.csv"
+        csv_path = os.path.join(log_dir, csv_name)
+
+    write_csv(csv_path, headers, rows)
+    print(f"\nWrote CSV results to {csv_path}")
+    return csv_path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "path",
+        help=(
+            "Either a single aiperf.log file, or a parent directory "
+            "containing one subfolder per run (each expected to have "
+            "<subfolder>/logs/aiperf.log, matching --log-rel-path)."
+        ),
+    )
+    parser.add_argument(
+        "--output-csv", default=None,
+        help=(
+            "Single-file mode only: path for the CSV output. Default: "
+            "auto-named 'aiperf_system_metrics_<run-end-timestamp>.csv' "
+            "in the same directory as the log file."
+        ),
+    )
+    parser.add_argument(
+        "--log-rel-path", default="logs/aiperf.log",
+        help="Directory mode: relative path to aiperf.log within each run subfolder (default: logs/aiperf.log)",
+    )
+    args = parser.parse_args()
+
+    if os.path.isfile(args.path):
+        # Single-run mode — same behavior as before this change.
+        process_run(args.path, args.output_csv)
+        return
+
+    if not os.path.isdir(args.path):
+        print(f"Error: '{args.path}' is neither a file nor a directory", file=sys.stderr)
+        sys.exit(1)
+
+    # Directory mode — one run per immediate subfolder, mirroring
+    # combine_aiperf_runs.py's folder-scanning pattern.
+    subfolders = sorted(
+        entry for entry in os.listdir(args.path)
+        if os.path.isdir(os.path.join(args.path, entry))
+    )
+
+    if not subfolders:
+        print(f"No subfolders found under {args.path}", file=sys.stderr)
+        sys.exit(1)
+
+    processed, skipped = 0, 0
+    for entry in subfolders:
+        log_path = os.path.join(args.path, entry, args.log_rel_path)
+        print(f"\n{'=' * 60}\n{entry}\n{'=' * 60}")
+        if not os.path.isfile(log_path):
+            print(f"Warning: no log found at '{log_path}', skipping", file=sys.stderr)
+            skipped += 1
+            continue
+        try:
+            process_run(log_path, output_csv=None)  # auto-named, written alongside this run's aiperf.log
+            processed += 1
+        except Exception as e:
+            print(f"Warning: failed to process '{log_path}': {e}", file=sys.stderr)
+            skipped += 1
+
+    print(f"\nDone. Processed {processed} run(s), skipped {skipped}.")
 
 
 if __name__ == "__main__":
