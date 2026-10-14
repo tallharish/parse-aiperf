@@ -1,0 +1,1 @@
+Miscellaneous scripts in parsing aiperf logs. These are an aide to my tutorial on "AI Inference Benchmarking and Observability" published at https://perfexcel.substack.com/p/ai-inference-benchmarking-and-observability
